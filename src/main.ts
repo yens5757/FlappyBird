@@ -21,6 +21,7 @@ import {
     fromEvent,
     interval,
     map,
+    merge,
     scan,
     switchMap,
     take,
@@ -41,7 +42,10 @@ const Birb = {
 
 const Constants = {
     PIPE_WIDTH: 50,
-    TICK_RATE_MS: 500, // Might need to change this!
+    TICK_RATE_MS: 20, // Might need to change this!
+    GRAVITY: 0.5,
+    FLAP_STRENGTH: -8,
+    BIRD_X: 100,
 } as const;
 
 // User input
@@ -51,10 +55,14 @@ type Key = "Space";
 // State processing
 
 type State = Readonly<{
+    birdY: number;
+    birdVelocity: number;
     gameEnd: boolean;
 }>;
 
 const initialState: State = {
+    birdY: Viewport.CANVAS_HEIGHT / 2 - Birb.HEIGHT / 2,
+    birdVelocity: 0,
     gameEnd: false,
 };
 
@@ -64,7 +72,32 @@ const initialState: State = {
  * @param s Current state
  * @returns Updated state
  */
-const tick = (s: State) => s;
+const tick = (s: State): State => {
+    const velocity = s.birdVelocity + Constants.GRAVITY;
+    const y = s.birdY + velocity;
+
+    // control the Y to not go off screen
+    const clampedY = Math.max(
+        0,
+        Math.min(Viewport.CANVAS_HEIGHT - Birb.HEIGHT, y),
+    );
+
+    return {
+        ...s,
+        birdY: clampedY,
+        birdVelocity: velocity,
+    };
+};
+
+/**
+ * Allows the bird to flap with constant flap strength
+ * @param s Current state
+ * @returns Updated state with flap velocity
+ */
+const flap = (s: State): State => ({
+    ...s,
+    birdVelocity: Constants.FLAP_STRENGTH,
+});
 
 // Rendering (side effects)
 
@@ -137,11 +170,12 @@ const render = (): ((s: State) => void) => {
      * @param s Current state
      */
     return (s: State) => {
+        svg.innerHTML = "";
         // Add birb to the main grid canvas
         const birdImg = createSvgElement(svg.namespaceURI, "image", {
             href: "assets/birb.png",
-            x: `${Viewport.CANVAS_WIDTH * 0.3 - Birb.WIDTH / 2}`,
-            y: `${Viewport.CANVAS_HEIGHT / 2 - Birb.HEIGHT / 2}`,
+            x: `${Constants.BIRD_X}`,
+            y: `${s.birdY}`,
             width: `${Birb.WIDTH}`,
             height: `${Birb.HEIGHT}`,
         });
@@ -176,15 +210,17 @@ const render = (): ((s: State) => void) => {
 
 export const state$ = (csvContents: string): Observable<State> => {
     /** User input */
-
-    const key$ = fromEvent<KeyboardEvent>(document, "keypress");
-    const fromKey = (keyCode: Key) =>
-        key$.pipe(filter(({ code }) => code === keyCode));
+    const flap$ = fromEvent<KeyboardEvent>(document, "keydown").pipe(
+        filter(e => e.code === "Space"),
+        map(() => (s: State) => flap(s)),
+    );
 
     /** Determines the rate of time steps */
-    const tick$ = interval(Constants.TICK_RATE_MS);
-
-    return tick$.pipe(scan((s: State) => ({ gameEnd: false }), initialState));
+    const tick$ = interval(Constants.TICK_RATE_MS).pipe(
+        map(() => (s: State) => tick(s)),
+    );
+    // merge both to 1 state and scans it
+    return merge(tick$, flap$).pipe(scan((s, f) => f(s), initialState));
 };
 
 // The following simply runs your main function on window load.  Make sure to leave it in place.
