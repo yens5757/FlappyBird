@@ -42,10 +42,11 @@ const Birb = {
 
 const Constants = {
     PIPE_WIDTH: 50,
-    TICK_RATE_MS: 20, // Might need to change this!
+    TICK_RATE_MS: 20, // changed from 500 to 20
     GRAVITY: 0.5,
     FLAP_STRENGTH: -8,
     BIRD_X: 100,
+    PIPE_SPEED: 2,
 } as const;
 
 // User input
@@ -84,24 +85,81 @@ const initialState: State = {
 /**
  * Updates the state by proceeding with one time step.
  *
- * @param s Current state
- * @returns Updated state
+ * @param allPipes pipes array that contains ALL PIPES(Not just existing pipes)
+ * @returns A function that takes the current state and returns the updated state
  */
-const tick = (s: State): State => {
-    const velocity = s.birdVelocity + Constants.GRAVITY;
-    const y = s.birdY + velocity;
+const tick =
+    (allPipes: ReadonlyArray<Pipe>) =>
+    (s: State): State => {
+        const velocity = s.birdVelocity + Constants.GRAVITY;
+        const y = s.birdY + velocity;
 
-    // control the Y to not go off screen
-    const clampedY = Math.max(
-        0,
-        Math.min(Viewport.CANVAS_HEIGHT - Birb.HEIGHT, y),
-    );
+        // control the Y to not go off screen
+        const clampedY = Math.max(
+            0,
+            Math.min(Viewport.CANVAS_HEIGHT - Birb.HEIGHT, y),
+        );
 
-    return {
-        ...s,
-        birdY: clampedY,
-        birdVelocity: velocity,
+        // calculate game time by calculating our tick
+        const newTime = s.gameTime + Constants.TICK_RATE_MS / 1000;
+        const updatedPipes = updatePipes(s.pipes, allPipes, newTime);
+
+        return {
+            ...s,
+            birdY: clampedY,
+            birdVelocity: velocity,
+            pipes: updatedPipes,
+            gameTime: newTime,
+        };
     };
+
+/**
+ * Process the csv string into the pipes array
+ * @param csvContent the entire csv string
+ */
+const parseCSV = (csvContent: string): ReadonlyArray<Pipe> => {
+    const lines = csvContent.trim().split("\n");
+    return lines.slice(1).map((line, index) => {
+        const [gapY, gapHeight, time] = line
+            .split(",")
+            .map(v => parseFloat(v.trim()));
+        return {
+            id: index,
+            x: Viewport.CANVAS_WIDTH,
+            gapY,
+            gapHeight,
+            passed: false,
+            time,
+        };
+    });
+};
+
+/**
+ * Updates pipe positions and spawns new pipes based on time
+ * @param currentPipes Currently visible pipes
+ * @param allPipes All pipes from CSV
+ * @param gameTime Current game time in seconds
+ * @returns Updated array of visible pipes
+ */
+const updatePipes = (
+    currentPipes: ReadonlyArray<Pipe>,
+    allPipes: ReadonlyArray<Pipe>,
+    gameTime: number,
+): ReadonlyArray<Pipe> => {
+    // Move existing pipes left
+    const movedPipes = currentPipes
+        .map(pipe => ({ ...pipe, x: pipe.x - Constants.PIPE_SPEED }))
+        // Remove off-screen pipes
+        .filter(pipe => pipe.x > -Constants.PIPE_WIDTH);
+
+    // Check for new pipes to spawn at this time
+    const newPipes = allPipes.filter(
+        pipe =>
+            Math.abs(pipe.time - gameTime) < Constants.TICK_RATE_MS / 1000 &&
+            // If not already spawned, then spawn
+            !currentPipes.some(p => p.id === pipe.id),
+    );
+    return [...movedPipes, ...newPipes];
 };
 
 /**
@@ -186,7 +244,35 @@ const render = (): ((s: State) => void) => {
      */
     return (s: State) => {
         svg.innerHTML = "";
-        // Add birb to the main grid canvas
+
+        // Draw dynamic pipes from state
+        s.pipes.forEach(pipe => {
+            const gapTop = pipe.gapY - pipe.gapHeight / 2;
+            const gapBottom = pipe.gapY + pipe.gapHeight / 2;
+
+            // Top pipe
+            const pipeTop = createSvgElement(svg.namespaceURI, "rect", {
+                x: `${pipe.x}`,
+                y: "0",
+                width: `${Constants.PIPE_WIDTH}`,
+                height: `${gapTop * Viewport.CANVAS_HEIGHT}`,
+                fill: "green",
+            });
+
+            // Bottom pipe
+            const pipeBottom = createSvgElement(svg.namespaceURI, "rect", {
+                x: `${pipe.x}`,
+                y: `${gapBottom * Viewport.CANVAS_HEIGHT}`,
+                width: `${Constants.PIPE_WIDTH}`,
+                height: `${(1 - gapBottom) * Viewport.CANVAS_HEIGHT}`,
+                fill: "green",
+            });
+
+            svg.appendChild(pipeTop);
+            svg.appendChild(pipeBottom);
+        });
+
+        // Add birb to the main grid canvas, the reason we would do this after is because we want the element to be on top
         const birdImg = createSvgElement(svg.namespaceURI, "image", {
             href: "assets/birb.png",
             x: `${Constants.BIRD_X}`,
@@ -224,6 +310,8 @@ const render = (): ((s: State) => void) => {
 };
 
 export const state$ = (csvContents: string): Observable<State> => {
+    const allPipes = parseCSV(csvContents);
+
     /** User input */
     const flap$ = fromEvent<KeyboardEvent>(document, "keydown").pipe(
         filter(e => e.code === "Space"),
@@ -232,7 +320,7 @@ export const state$ = (csvContents: string): Observable<State> => {
 
     /** Determines the rate of time steps */
     const tick$ = interval(Constants.TICK_RATE_MS).pipe(
-        map(() => (s: State) => tick(s)),
+        map(() => tick(allPipes)),
     );
     // merge both to 1 state and scans it
     return merge(tick$, flap$).pipe(scan((s, f) => f(s), initialState));
