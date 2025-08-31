@@ -57,12 +57,27 @@ type Key = "Space";
 type State = Readonly<{
     birdY: number;
     birdVelocity: number;
+    gameTime: number;
+    // array to store the pipes
+    pipes: ReadonlyArray<Pipe>;
     gameEnd: boolean;
+}>;
+
+// pipe class, we store these at the state
+type Pipe = Readonly<{
+    id: number;
+    x: number;
+    gapY: number;
+    gapHeight: number;
+    passed: boolean;
+    time: number;
 }>;
 
 const initialState: State = {
     birdY: Viewport.CANVAS_HEIGHT / 2 - Birb.HEIGHT / 2,
     birdVelocity: 0,
+    pipes: [],
+    gameTime: 0,
     gameEnd: false,
 };
 
