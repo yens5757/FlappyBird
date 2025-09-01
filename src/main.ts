@@ -62,6 +62,9 @@ type State = Readonly<{
     // array to store the pipes
     pipes: ReadonlyArray<Pipe>;
     gameEnd: boolean;
+    lives: number;
+    rngSeed: number;
+    invulnerableUntil: number;
 }>;
 
 // pipe class, we store these at the state
@@ -80,6 +83,9 @@ const initialState: State = {
     pipes: [],
     gameTime: 0,
     gameEnd: false,
+    lives: 3,
+    rngSeed: 12345,
+    invulnerableUntil: 0,
 };
 
 // imported directly from weekly submission
@@ -107,15 +113,54 @@ const tick =
         const velocity = s.birdVelocity + Constants.GRAVITY;
         const y = s.birdY + velocity;
 
-        // control the Y to not go off screen
+        // calculate game time by calculating our tick
+        const newTime = s.gameTime + Constants.TICK_RATE_MS / 1000;
+        const updatedPipes = updatePipes(s.pipes, allPipes, newTime);
+
+        const isVulnerable = newTime >= s.invulnerableUntil;
+        if (isVulnerable) {
+            const hitTop = checkBirdHitsTop(y);
+            const hitBottom = checkBirdHitsBottom(y);
+            const hitPipe = s.pipes.find(pipe => checkBirdHitsPipe(y, pipe));
+
+            if (hitTop || hitBottom || hitPipe) {
+                // Determine bounce direction
+                let shouldBounceUp = false;
+                if (hitBottom) {
+                    shouldBounceUp = true;
+                } else if (hitTop) {
+                    shouldBounceUp = false;
+                } else if (hitPipe) {
+                    const collisionType = getPipeCollisionType(y, hitPipe);
+                    shouldBounceUp = collisionType === "bottom";
+                }
+
+                // Generate random bounce velocity
+                const [bounceVelocity, newSeed] = generateBounceVelocity(
+                    s.rngSeed,
+                    shouldBounceUp,
+                );
+
+                // Apply collision effects
+                return {
+                    ...s,
+                    birdY: y,
+                    birdVelocity: bounceVelocity,
+                    pipes: updatedPipes,
+                    gameTime: newTime,
+                    lives: s.lives - 1,
+                    rngSeed: newSeed,
+                    invulnerableUntil: newTime + 2, // this is set to 2 second
+                    gameEnd: s.lives - 1 <= 0,
+                };
+            }
+        }
+
+        // normal update if no collision
         const clampedY = Math.max(
             0,
             Math.min(Viewport.CANVAS_HEIGHT - Birb.HEIGHT, y),
         );
-
-        // calculate game time by calculating our tick
-        const newTime = s.gameTime + Constants.TICK_RATE_MS / 1000;
-        const updatedPipes = updatePipes(s.pipes, allPipes, newTime);
 
         return {
             ...s,
@@ -123,6 +168,7 @@ const tick =
             birdVelocity: velocity,
             pipes: updatedPipes,
             gameTime: newTime,
+            invulnerableUntil: s.invulnerableUntil,
         };
     };
 
@@ -173,6 +219,80 @@ const updatePipes = (
             !currentPipes.some(p => p.id === pipe.id),
     );
     return [...movedPipes, ...newPipes];
+};
+
+/**
+ * Checks if bird hits the top boundary
+ * @param birdY Current Y position of bird
+ * @returns true if bird hits top
+ */
+const checkBirdHitsTop = (birdY: number): boolean => birdY <= 0;
+
+/**
+ * Checks if bird hits the bottom boundary
+ * @param birdY Current Y position of bird
+ * @returns true if bird hits bottom
+ */
+const checkBirdHitsBottom = (birdY: number): boolean =>
+    birdY + Birb.HEIGHT >= Viewport.CANVAS_HEIGHT;
+
+/**
+ * Checks if bird collides with a pipe
+ * @param birdY Y position of bird
+ * @param pipe Pipe to check collision with
+ * @returns true if collision occurs
+ */
+const checkBirdHitsPipe = (birdY: number, pipe: Pipe): boolean => {
+    const birdLeft = Constants.BIRD_X;
+    const birdRight = Constants.BIRD_X + Birb.WIDTH;
+    const birdTop = birdY;
+    const birdBottom = birdY + Birb.HEIGHT;
+
+    const pipeLeft = pipe.x;
+    const pipeRight = pipe.x + Constants.PIPE_WIDTH;
+    const gapTop = (pipe.gapY - pipe.gapHeight / 2) * Viewport.CANVAS_HEIGHT;
+    const gapBottom = (pipe.gapY + pipe.gapHeight / 2) * Viewport.CANVAS_HEIGHT;
+
+    // Check x value first
+    if (birdRight > pipeLeft && birdLeft < pipeRight) {
+        // then check y value
+        return birdTop < gapTop || birdBottom > gapBottom;
+    }
+    return false;
+};
+
+/**
+ * Determines which part of pipe was hit
+ * @param birdY Y position of bird
+ * @param pipe Pipe that was hit
+ * @returns 'top' or 'bottom' based on collision location
+ */
+const getPipeCollisionType = (birdY: number, pipe: Pipe): "top" | "bottom" => {
+    // we want to know whether we hit the top pipe or the bottom pipe
+    const birdCenter = birdY + Birb.HEIGHT / 2;
+    const gapCenter = pipe.gapY * Viewport.CANVAS_HEIGHT;
+    return birdCenter < gapCenter ? "top" : "bottom";
+};
+
+/**
+ * Generates random(with seed) bounce velocity
+ * @param seed Current RNG seed
+ * @param isUpward Whether bounce should be upward
+ * @returns Tuple of [velocity, nextSeed]
+ */
+const generateBounceVelocity = (
+    seed: number,
+    isUpward: boolean,
+): [number, number] => {
+    // by random, this is actually not fully random, as fully random is impure
+    // this achieves randomness by using hash function and seed
+    // which means this is pure because it would generate the same result everytime if the seed is the same
+    const nextSeed = RNG.hash(seed);
+    const randomValue = RNG.scale(nextSeed);
+    // Random velocity between 3 and 6
+    const magnitude = 3 + Math.abs(randomValue) * 3;
+    const velocity = isUpward ? -magnitude : magnitude;
+    return [velocity, nextSeed];
 };
 
 /**
@@ -285,6 +405,14 @@ const render = (): ((s: State) => void) => {
             svg.appendChild(pipeBottom);
         });
 
+        // Update lives display
+        livesText.textContent = `${s.lives}`;
+
+        // Show game over if no lives left
+        if (s.gameEnd) {
+            show(gameOver);
+        }
+
         // Add birb to the main grid canvas, the reason we would do this after is because we want the element to be on top
         const birdImg = createSvgElement(svg.namespaceURI, "image", {
             href: "assets/birb.png",
@@ -293,6 +421,13 @@ const render = (): ((s: State) => void) => {
             width: `${Birb.WIDTH}`,
             height: `${Birb.HEIGHT}`,
         });
+        // I found the Invulnerable to be hard to notice, so I added a Invulnerable flashing effect
+        const isInvulnerable = s.gameTime < s.invulnerableUntil;
+        if (isInvulnerable) {
+            // Flash on and off every 100ms
+            const flashCycle = Math.floor(s.gameTime * 10) % 2;
+            birdImg.setAttribute("opacity", flashCycle === 0 ? "0.3" : "1");
+        }
         svg.appendChild(birdImg);
     };
 };
