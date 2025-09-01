@@ -445,8 +445,17 @@ export const state$ = (csvContents: string): Observable<State> => {
     const tick$ = interval(Constants.TICK_RATE_MS).pipe(
         map(() => tick(allPipes)),
     );
+
+    /** Restart when player lost all lifes */
+    const restart$ = fromEvent<KeyboardEvent>(document, "keydown").pipe(
+        filter(e => e.code === "KeyR"),
+        map(() => (s: State) => (s.gameEnd ? initialState : s)),
+    );
+
     // merge both to 1 state and scans it
-    return merge(tick$, flap$).pipe(scan((s, f) => f(s), initialState));
+    return merge(tick$, flap$, restart$).pipe(
+        scan((s, f) => f(s), initialState),
+    );
 };
 
 // The following simply runs your main function on window load.  Make sure to leave it in place.
