@@ -110,6 +110,7 @@ abstract class RNG {
 const tick =
     (allPipes: ReadonlyArray<Pipe>) =>
     (s: State): State => {
+        if (s.gameEnd) return s;
         const velocity = s.birdVelocity + Constants.GRAVITY;
         const y = s.birdY + velocity;
 
