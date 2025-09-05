@@ -61,6 +61,7 @@ type State = Readonly<{
     gameTime: number;
     // array to store the pipes
     pipes: ReadonlyArray<Pipe>;
+    score: number;
     gameEnd: boolean;
     lives: number;
     rngSeed: number;
@@ -82,6 +83,7 @@ const initialState: State = {
     birdVelocity: 0,
     pipes: [],
     gameTime: 0,
+    score: 0,
     gameEnd: false,
     lives: 3,
     rngSeed: 12345,
@@ -118,12 +120,27 @@ const tick =
         const newTime = s.gameTime + Constants.TICK_RATE_MS / 1000;
         const updatedPipes = updatePipes(s.pipes, allPipes, newTime);
 
+        const pipesWithScore = updatedPipes.map(pipe =>
+            !pipe.passed && pipe.x + Constants.PIPE_WIDTH < Constants.BIRD_X
+                ? { ...pipe, passed: true }
+                : pipe,
+        );
+        const newlyPassed = updatedPipes.filter(
+            pipe =>
+                !pipe.passed &&
+                pipe.x + Constants.PIPE_WIDTH < Constants.BIRD_X,
+        ).length;
+
+        const newScore = s.score + newlyPassed;
+        const allPipesPassed =
+            allPipes.length > 0 &&
+            pipesWithScore.filter(p => p.passed).length === allPipes.length;
+
         const isVulnerable = newTime >= s.invulnerableUntil;
         if (isVulnerable) {
             const hitTop = checkBirdHitsTop(y);
             const hitBottom = checkBirdHitsBottom(y);
             const hitPipe = s.pipes.find(pipe => checkBirdHitsPipe(y, pipe));
-
             if (hitTop || hitBottom || hitPipe) {
                 // Determine bounce direction
                 let shouldBounceUp = false;
@@ -147,12 +164,13 @@ const tick =
                     ...s,
                     birdY: y,
                     birdVelocity: bounceVelocity,
-                    pipes: updatedPipes,
+                    pipes: pipesWithScore,
                     gameTime: newTime,
                     lives: s.lives - 1,
                     rngSeed: newSeed,
                     invulnerableUntil: newTime + 2, // this is set to 2 second
-                    gameEnd: s.lives - 1 <= 0,
+                    score: newScore,
+                    gameEnd: s.lives - 1 <= 0 || allPipesPassed,
                 };
             }
         }
@@ -167,9 +185,11 @@ const tick =
             ...s,
             birdY: clampedY,
             birdVelocity: velocity,
-            pipes: updatedPipes,
+            pipes: pipesWithScore,
+            score: newScore,
             gameTime: newTime,
             invulnerableUntil: s.invulnerableUntil,
+            gameEnd: allPipesPassed,
         };
     };
 
@@ -408,6 +428,7 @@ const render = (): ((s: State) => void) => {
 
         // Update lives display
         livesText.textContent = `${s.lives}`;
+        scoreText.textContent = `${s.score}`;
 
         // Show game over if no lives left
         if (s.gameEnd) {
