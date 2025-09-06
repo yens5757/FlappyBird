@@ -49,10 +49,6 @@ const Constants = {
     PIPE_SPEED: 2,
 } as const;
 
-// User input
-
-type Key = "Space";
-
 // State processing
 
 type State = Readonly<{
