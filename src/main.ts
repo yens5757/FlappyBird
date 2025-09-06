@@ -62,6 +62,8 @@ type State = Readonly<{
     lives: number;
     rngSeed: number;
     invulnerableUntil: number;
+    currentPath: ReadonlyArray<number>; // Recording current run
+    ghostPath: ReadonlyArray<number>; // Previous run to replay
 }>;
 
 // pipe class, we store these at the state
@@ -84,6 +86,8 @@ const initialState: State = {
     lives: 3,
     rngSeed: 12345,
     invulnerableUntil: 0,
+    currentPath: [],
+    ghostPath: [],
 };
 
 // imported directly from weekly submission
@@ -167,6 +171,7 @@ const tick =
                     invulnerableUntil: newTime + 2, // this is set to 2 second
                     score: newScore,
                     gameEnd: s.lives - 1 <= 0 || allPipesPassed,
+                    currentPath: [...s.currentPath, y],
                 };
             }
         }
@@ -186,6 +191,7 @@ const tick =
             gameTime: newTime,
             invulnerableUntil: s.invulnerableUntil,
             gameEnd: allPipesPassed,
+            currentPath: [...s.currentPath, clampedY],
         };
     };
 
@@ -421,7 +427,27 @@ const render = (): ((s: State) => void) => {
             svg.appendChild(pipeTop);
             svg.appendChild(pipeBottom);
         });
+        // Draw ghost bird if it exists
+        if (s.ghostPath.length > 0) {
+            const ghostFrame = Math.floor(
+                s.gameTime / (Constants.TICK_RATE_MS / 1000),
+            );
 
+            if (ghostFrame < s.ghostPath.length) {
+                const ghostY = s.ghostPath[ghostFrame];
+
+                const ghostImg = createSvgElement(svg.namespaceURI, "image", {
+                    href: "assets/birb.png",
+                    x: `${Constants.BIRD_X}`,
+                    y: `${ghostY}`,
+                    width: `${Birb.WIDTH}`,
+                    height: `${Birb.HEIGHT}`,
+                    opacity: "0.3",
+                    filter: "grayscale(100%)",
+                });
+                svg.appendChild(ghostImg);
+            }
+        }
         // Update lives display
         livesText.textContent = `${s.lives}`;
         scoreText.textContent = `${s.score}`;
@@ -467,7 +493,15 @@ export const state$ = (csvContents: string): Observable<State> => {
     /** Restart when player lost all lifes */
     const restart$ = fromEvent<KeyboardEvent>(document, "keydown").pipe(
         filter(e => e.code === "KeyR"),
-        map(() => (s: State) => (s.gameEnd ? initialState : s)),
+        map(
+            () => (s: State) =>
+                s.gameEnd
+                    ? {
+                          ...initialState,
+                          ghostPath: s.currentPath, // Transfer current path to ghost
+                      }
+                    : s,
+        ),
     );
 
     // merge both to 1 state and scans it
