@@ -25,7 +25,6 @@ import {
     scan,
     switchMap,
     take,
-    timer,
 } from "rxjs";
 import { fromFetch } from "rxjs/fetch";
 
@@ -63,7 +62,7 @@ type State = Readonly<{
     rngSeed: number; // applied class rng
     invulnerableUntil: number;
     currentPath: ReadonlyArray<number>; // Recording current run
-    ghostPath: ReadonlyArray<number>; // Previous run to replay
+    ghostPath: ReadonlyArray<ReadonlyArray<number>>; // Previous run to replay
     paused: boolean;
 }>;
 
@@ -161,16 +160,13 @@ const tick =
 
             if (hitTop || hitBottom || hitPipe) {
                 // Determine bounce direction
-                let shouldBounceUp = false;
-                if (hitBottom) {
-                    shouldBounceUp = true;
-                } else if (hitTop) {
-                    shouldBounceUp = false;
-                } else if (hitPipe) {
-                    const collisionType = getPipeCollisionType(y, hitPipe);
-                    shouldBounceUp = collisionType === "bottom";
-                }
-
+                const shouldBounceUp = hitBottom
+                    ? true
+                    : hitTop
+                      ? false
+                      : hitPipe
+                        ? getPipeCollisionType(y, hitPipe) === "bottom"
+                        : false;
                 // Generate random bounce velocity
                 const [bounceVelocity, newSeed] = generateBounceVelocity(
                     s.rngSeed,
@@ -216,6 +212,7 @@ const tick =
 /**
  * Process the csv string into the pipes array
  * @param csvContent the entire csv string
+ * @returns an array of the pipes
  */
 const parseCSV = (csvContent: string): ReadonlyArray<Pipe> => {
     const lines = csvContent.trim().split("\n");
@@ -234,34 +231,6 @@ const parseCSV = (csvContent: string): ReadonlyArray<Pipe> => {
             time,
         };
     });
-};
-
-/**
- * Updates pipe positions and spawns new pipes based on time
- * @param currentPipes Currently visible pipes
- * @param allPipes All pipes from CSV
- * @param gameTime Current game time in seconds
- * @returns Updated array of visible pipes
- */
-const updatePipes = (
-    currentPipes: ReadonlyArray<Pipe>,
-    allPipes: ReadonlyArray<Pipe>,
-    gameTime: number,
-): ReadonlyArray<Pipe> => {
-    // Move existing pipes left
-    const movedPipes = currentPipes
-        .map(pipe => ({ ...pipe, x: pipe.x - Constants.PIPE_SPEED }))
-        // Remove off-screen pipes
-        .filter(pipe => pipe.x > -Constants.PIPE_WIDTH);
-
-    // Check for new pipes to spawn at this time
-    const newPipes = allPipes.filter(
-        pipe =>
-            Math.abs(pipe.time - gameTime) < Constants.TICK_RATE_MS / 1000 &&
-            // If not already spawned, then spawn
-            !currentPipes.some(p => p.id === pipe.id),
-    );
-    return [...movedPipes, ...newPipes];
 };
 
 /**
@@ -449,26 +418,32 @@ const render = (): ((s: State) => void) => {
             svg.appendChild(pipeBottom);
         });
         // Draw ghost bird if it exists
-        if (s.ghostPath.length > 0) {
-            const ghostFrame = Math.floor(
-                s.gameTime / (Constants.TICK_RATE_MS / 1000),
-            );
+        s.ghostPath.forEach(path => {
+            if (path.length > 0) {
+                const ghostFrame = Math.floor(
+                    s.gameTime / (Constants.TICK_RATE_MS / 1000),
+                );
 
-            if (ghostFrame < s.ghostPath.length) {
-                const ghostY = s.ghostPath[ghostFrame];
+                if (ghostFrame < path.length) {
+                    const ghostY = path[ghostFrame];
 
-                const ghostImg = createSvgElement(svg.namespaceURI, "image", {
-                    href: "assets/birb.png",
-                    x: `${Constants.BIRD_X}`,
-                    y: `${ghostY}`,
-                    width: `${Birb.WIDTH}`,
-                    height: `${Birb.HEIGHT}`,
-                    opacity: "0.3",
-                    filter: "grayscale(100%)",
-                });
-                svg.appendChild(ghostImg);
+                    const ghostImg = createSvgElement(
+                        svg.namespaceURI,
+                        "image",
+                        {
+                            href: "assets/birb.png",
+                            x: `${Constants.BIRD_X}`,
+                            y: `${ghostY}`,
+                            width: `${Birb.WIDTH}`,
+                            height: `${Birb.HEIGHT}`,
+                            opacity: "0.3",
+                            filter: "grayscale(100%)",
+                        },
+                    );
+                    svg.appendChild(ghostImg);
+                }
             }
-        }
+        });
         // Update lives display
         livesText.textContent = `${s.lives}`;
         scoreText.textContent = `${s.score}`;
@@ -486,6 +461,7 @@ const render = (): ((s: State) => void) => {
             width: `${Birb.WIDTH}`,
             height: `${Birb.HEIGHT}`,
         });
+
         // I found the Invulnerable to be hard to notice, so I added a Invulnerable flashing effect
         const isInvulnerable = s.gameTime < s.invulnerableUntil;
         if (isInvulnerable) {
@@ -500,17 +476,6 @@ const render = (): ((s: State) => void) => {
 export const state$ = (csvContents: string): Observable<State> => {
     const allPipes = parseCSV(csvContents);
 
-    const pipeSpawn$ = merge(
-        ...allPipes.map(pipe =>
-            timer(pipe.time * 1000).pipe(
-                map(() => (s: State) => ({
-                    ...s,
-                    pipes: [...s.pipes, pipe],
-                })),
-            ),
-        ),
-    );
-
     /** User input */
     const flap$ = fromEvent<KeyboardEvent>(document, "keydown").pipe(
         filter(e => e.code === "Space"),
@@ -519,8 +484,27 @@ export const state$ = (csvContents: string): Observable<State> => {
 
     /** Determines the rate of time steps */
     const tick$ = interval(Constants.TICK_RATE_MS).pipe(
-        // although we pass the allPipes
-        map(() => tick(allPipes.length)),
+        map(() => (s: State) => {
+            const afterTick = tick(allPipes.length)(s);
+
+            // Determine which pipes should spawn at this tick
+            // Only if the game is not paused and not ended
+            const pipesToSpawn =
+                !s.gameEnd && !s.paused
+                    ? // we only add the pipes that is not in the allpipes
+                      allPipes.filter(
+                          pipe =>
+                              Math.abs(pipe.time - afterTick.gameTime) <
+                                  Constants.TICK_RATE_MS / 1000 &&
+                              !afterTick.pipes.some(p => p.id === pipe.id),
+                      )
+                    : [];
+
+            return {
+                ...afterTick,
+                pipes: [...afterTick.pipes, ...pipesToSpawn],
+            };
+        }),
     );
 
     /** Restart when player lost all lifes */
@@ -531,7 +515,8 @@ export const state$ = (csvContents: string): Observable<State> => {
                 s.gameEnd
                     ? {
                           ...initialState,
-                          ghostPath: s.currentPath, // Transfer current path to ghost
+                          // Transfer current path to ghost
+                          ghostPath: [...s.ghostPath, [...s.currentPath]],
                       }
                     : s,
         ),
@@ -546,7 +531,7 @@ export const state$ = (csvContents: string): Observable<State> => {
     );
 
     // merge to 1 state and scans it
-    return merge(tick$, flap$, restart$, pipeSpawn$, pause$).pipe(
+    return merge(tick$, flap$, restart$, pause$).pipe(
         scan((s, f) => f(s), initialState),
     );
 };
