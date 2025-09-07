@@ -42,7 +42,7 @@ const Birb = {
 
 const Constants = {
     PIPE_WIDTH: 50,
-    TICK_RATE_MS: 20, // changed from 500 to 20
+    TICK_RATE_MS: 5, // changed from 500 to 20
     GRAVITY: 0.5,
     FLAP_STRENGTH: -8,
     BIRD_X: 100,
@@ -83,7 +83,7 @@ const initialState: State = {
     gameTime: 0,
     score: 0,
     gameEnd: false,
-    lives: 3,
+    lives: 30,
     rngSeed: 12345,
     invulnerableUntil: 0,
     currentPath: [],
@@ -133,8 +133,7 @@ const tick =
 
         const newScore = s.score + newlyPassed;
         const allPipesPassed =
-            allPipes.length > 0 &&
-            pipesWithScore.filter(p => p.passed).length === allPipes.length;
+            allPipes.length > 0 && newScore >= allPipes.length;
 
         const isVulnerable = newTime >= s.invulnerableUntil;
         if (isVulnerable) {
@@ -391,6 +390,7 @@ const render = (): ((s: State) => void) => {
         "viewBox",
         `0 0 ${Viewport.CANVAS_WIDTH} ${Viewport.CANVAS_HEIGHT}`,
     );
+
     /**
      * Renders the current state to the canvas.
      *
