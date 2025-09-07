@@ -25,6 +25,7 @@ import {
     scan,
     switchMap,
     take,
+    timer,
 } from "rxjs";
 import { fromFetch } from "rxjs/fetch";
 
@@ -42,10 +43,10 @@ const Birb = {
 
 const Constants = {
     PIPE_WIDTH: 50,
-    TICK_RATE_MS: 5, // changed from 500 to 20
+    TICK_RATE_MS: 20, // changed from 500 to 20
     GRAVITY: 0.5,
     FLAP_STRENGTH: -8,
-    BIRD_X: 100,
+    BIRD_X: 100, // this won't be changed throughout the game
     PIPE_SPEED: 2,
 } as const;
 
@@ -55,42 +56,45 @@ type State = Readonly<{
     birdY: number;
     birdVelocity: number;
     gameTime: number;
-    // array to store the pipes
-    pipes: ReadonlyArray<Pipe>;
+    pipes: ReadonlyArray<Pipe>; // array to store the pipes
     score: number;
     gameEnd: boolean;
     lives: number;
-    rngSeed: number;
+    rngSeed: number; // applied class rng
     invulnerableUntil: number;
     currentPath: ReadonlyArray<number>; // Recording current run
     ghostPath: ReadonlyArray<number>; // Previous run to replay
+    paused: boolean;
 }>;
 
 // pipe class, we store these at the state
+
 type Pipe = Readonly<{
     id: number;
     x: number;
     gapY: number;
     gapHeight: number;
-    passed: boolean;
+    passed: boolean; // if we passed it already we set it to True
     time: number;
 }>;
 
 const initialState: State = {
-    birdY: Viewport.CANVAS_HEIGHT / 2 - Birb.HEIGHT / 2,
+    birdY: Viewport.CANVAS_HEIGHT / 2 - Birb.HEIGHT / 2, // bird will be center of the canvas
     birdVelocity: 0,
     pipes: [],
     gameTime: 0,
     score: 0,
     gameEnd: false,
-    lives: 30,
+    lives: 3,
     rngSeed: 12345,
     invulnerableUntil: 0,
     currentPath: [],
     ghostPath: [],
+    paused: false,
 };
 
 // imported directly from weekly submission
+
 abstract class RNG {
     private static m = 0x80000000; // 2^31
     private static a = 1103515245;
@@ -110,36 +114,51 @@ abstract class RNG {
  * @returns A function that takes the current state and returns the updated state
  */
 const tick =
-    (allPipes: ReadonlyArray<Pipe>) =>
+    (allPipesLength: number) =>
     (s: State): State => {
-        if (s.gameEnd) return s;
+        // if game ended is flag as True or it's paused, we do not update the state
+        if (s.gameEnd || s.paused) return s;
+
+        // the velocity will keep getting higher and higher as time goes
         const velocity = s.birdVelocity + Constants.GRAVITY;
         const y = s.birdY + velocity;
 
         // calculate game time by calculating our tick
         const newTime = s.gameTime + Constants.TICK_RATE_MS / 1000;
-        const updatedPipes = updatePipes(s.pipes, allPipes, newTime);
 
-        const pipesWithScore = updatedPipes.map(pipe =>
+        const movedPipes = s.pipes
+            .map(pipe => ({ ...pipe, x: pipe.x - Constants.PIPE_SPEED }))
+            // if pipe is not passed AND the pipe is on the left, that means we passed the pipe already
+            .filter(pipe => pipe.x > -Constants.PIPE_WIDTH);
+
+        const pipesWithScore = movedPipes.map(pipe =>
             !pipe.passed && pipe.x + Constants.PIPE_WIDTH < Constants.BIRD_X
                 ? { ...pipe, passed: true }
                 : pipe,
         );
-        const newlyPassed = updatedPipes.filter(
+
+        // After we check the passed Pipes, we calculate the amount of pipes we passed in this 1 tick and use it as score
+        const newlyPassed = movedPipes.filter(
             pipe =>
                 !pipe.passed &&
                 pipe.x + Constants.PIPE_WIDTH < Constants.BIRD_X,
         ).length;
 
+        // adding the score
         const newScore = s.score + newlyPassed;
-        const allPipesPassed =
-            allPipes.length > 0 && newScore >= allPipes.length;
 
+        // checking if we've passed all the pipes
+        const allPipesPassed = allPipesLength > 0 && newScore >= allPipesLength;
+
+        // Check if we are vulnerable to collision
         const isVulnerable = newTime >= s.invulnerableUntil;
         if (isVulnerable) {
+            // we need to have 3 function for hitting the top/bottom of the screen and the pipes
+            // so we can decide on the bounce
             const hitTop = checkBirdHitsTop(y);
             const hitBottom = checkBirdHitsBottom(y);
             const hitPipe = s.pipes.find(pipe => checkBirdHitsPipe(y, pipe));
+
             if (hitTop || hitBottom || hitPipe) {
                 // Determine bounce direction
                 let shouldBounceUp = false;
@@ -200,6 +219,8 @@ const tick =
  */
 const parseCSV = (csvContent: string): ReadonlyArray<Pipe> => {
     const lines = csvContent.trim().split("\n");
+
+    // ignores first line and output a array of objects
     return lines.slice(1).map((line, index) => {
         const [gapY, gapHeight, time] = line
             .split(",")
@@ -479,6 +500,17 @@ const render = (): ((s: State) => void) => {
 export const state$ = (csvContents: string): Observable<State> => {
     const allPipes = parseCSV(csvContents);
 
+    const pipeSpawn$ = merge(
+        ...allPipes.map(pipe =>
+            timer(pipe.time * 1000).pipe(
+                map(() => (s: State) => ({
+                    ...s,
+                    pipes: [...s.pipes, pipe],
+                })),
+            ),
+        ),
+    );
+
     /** User input */
     const flap$ = fromEvent<KeyboardEvent>(document, "keydown").pipe(
         filter(e => e.code === "Space"),
@@ -487,7 +519,8 @@ export const state$ = (csvContents: string): Observable<State> => {
 
     /** Determines the rate of time steps */
     const tick$ = interval(Constants.TICK_RATE_MS).pipe(
-        map(() => tick(allPipes)),
+        // although we pass the allPipes
+        map(() => tick(allPipes.length)),
     );
 
     /** Restart when player lost all lifes */
@@ -503,9 +536,17 @@ export const state$ = (csvContents: string): Observable<State> => {
                     : s,
         ),
     );
+    /** Pause when player press P */
+    const pause$ = fromEvent<KeyboardEvent>(document, "keydown").pipe(
+        filter(e => e.code === "KeyP"),
+        map(() => (s: State) => ({
+            ...s,
+            paused: !s.paused,
+        })),
+    );
 
-    // merge both to 1 state and scans it
-    return merge(tick$, flap$, restart$).pipe(
+    // merge to 1 state and scans it
+    return merge(tick$, flap$, restart$, pipeSpawn$, pause$).pipe(
         scan((s, f) => f(s), initialState),
     );
 };
